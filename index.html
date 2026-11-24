@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YOLO26m Edge Runner</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;min-height:100vh}
+header{padding:20px 16px 8px;text-align:center}h1{margin:0;font-size:1.4rem}p{margin:4px 0;color:#aaa}
+#bar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;padding:8px 16px}
+button,.btn{background:#2a6;border:0;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
+button:disabled{opacity:.45;cursor:wait}input[type=file]{display:none}
+#status{color:#9cf;padding:4px 16px;min-height:1.6em;text-align:center}
+#wrap{position:relative;margin:8px 16px 24px;max-width:min(96vw,960px)}
+canvas{display:block;max-width:100%;height:auto;border-radius:8px;background:#000}
+#info{color:#aaa;font-size:12px;padding:0 16px 24px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>YOLO26m — Static Edge Model Runner</h1>
+  <p>ONNX inference in Rust + WebAssembly. No server compute.</p>
+</header>
+<div id="bar">
+  <button id="load">Load Model</button>
+  <label class="btn" for="file">Pick Image</label>
+  <input id="file" type="file" accept="image/*">
+</div>
+<div id="status">Model not loaded.</div>
+<div id="wrap"><canvas id="c"></canvas></div>
+<div id="info">Model: <code>yolo26m.onnx</code> (local) · Inference: tract-onnx in WASM · Pre/post/NMS in Rust</div>
+<script type="module">
+import init, { init as loadModel, detect } from './pkg/yoloweb.js';
+const $ = id => document.getElementById(id);
+const canvas = $('c'), ctx = canvas.getContext('2d');
+let ready = false, imgBitmap = null;
+
+const set = t => $('status').textContent = t;
+const draw = (dets=[]) => {
+  if (!imgBitmap) return;
+  canvas.width = imgBitmap.width; canvas.height = imgBitmap.height;
+  ctx.drawImage(imgBitmap, 0, 0);
+  ctx.lineWidth = Math.max(2, canvas.width / 400);
+  ctx.font = `${Math.max(12, canvas.width / 60)|0}px system-ui`;
+  for (const d of dets) {
+    const w = d.x2-d.x1, h = d.y2-d.y1;
+    ctx.strokeStyle = '#00ff88'; ctx.strokeRect(d.x1,d.y1,w,h);
+    const label = `${d.label} ${(d.score*100).toFixed(1)}%`;
+    const tw = ctx.measureText(label).width + 8;
+    const th = parseInt(ctx.font) + 6;
+    const ly = d.y1 > th ? d.y1-th : d.y1;
+    ctx.fillStyle = '#00ff88cc'; ctx.fillRect(d.x1, ly, tw, th);
+    ctx.fillStyle = '#000'; ctx.fillText(label, d.x1+4, ly+th-4);
+  }
+};
+
+$('load').onclick = async () => {
+  $('load').disabled = true;
+  try {
+    set('Initializing WASM...');
+    await init();
+    set('Fetching yolo26m.onnx (82MB)...');
+    const res = await fetch('./yolo26m.onnx');
+    if (!res.ok) throw new Error(`HTTP ${res.status} for yolo26m.onnx`);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    set('Loading model into tract...');
+    const ok = loadModel(buf);
+    if (!ok) throw new Error('Model init failed');
+    ready = true;
+    set('Model ready. Pick an image to run detection.');
+  } catch (e) { set('Error: ' + e.message); $('load').disabled = false; }
+};
+
+$('file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  imgBitmap = await createImageBitmap(f);
+  draw();
+  if (!ready) { set('Image loaded. Load model first.'); return; }
+  set('Running inference...');
+  await new Promise(r => setTimeout(r, 30));
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  const t0 = performance.now();
+  const dets = JSON.parse(detect(bytes, 0.25, 0.45));
+  const ms = (performance.now()-t0).toFixed(0);
+  draw(dets);
+  set(`${dets.length} detections in ${ms} ms`);
+};
+</script>
+</body>
+</html>
